@@ -4,6 +4,7 @@
 #include "stdafx.h"
 #include "PassPFN.h"
 
+TCHAR GlobalMapName[] = TEXT("Local\\PFNDataMem");
 
 // Get the information from the shared Memory and Remap that shiz
 BOOL GetMappedDataAndReMap()
@@ -14,10 +15,17 @@ BOOL GetMappedDataAndReMap()
 	PFNData *PfnDataMem = NULL;
 	ULONG_PTR NumPages;
 	PVOID RemappedData;
+	SIZE_T ReadDataLen;
+	BOOL MapRet = FALSE;
+	BOOL AllocRes = FALSE;
+
+	//static buffer for RPM
+	char buffer[10] = { 0 };
+	DebugBreak();
 
 	MapFile = OpenFileMapping(FILE_MAP_READ,
-		FALSE,
-		GLOBALMEM);
+		TRUE,
+		L"Local\\PFNDataMem");
 	if (MapFile == NULL)
 	{
 		printf("Mapping Object not found!\n");
@@ -55,12 +63,14 @@ BOOL GetMappedDataAndReMap()
 		return FALSE;
 	}
 
-	// Need to write here
-	if (!VirtualProtect(PfnBuffer, PfnBufferLen, PAGE_READWRITE, NULL))
+	//Create a dummy AWEInfo struct for this process
+	ULONG_PTR PfnFakeBuffer[256];
+	ULONG_PTR PfnFakeNumPages = 256;
+	AllocRes = AllocateUserPhysicalPages(GetCurrentProcess(), &PfnFakeNumPages, PfnFakeBuffer);
+	if (!AllocRes)
 	{
-		printf("Can't Write to new Buffer\n");
+		printf("Could allocate AWE\n");
 		UnmapViewOfFile(PfnDataMem);
-		HeapFree(GetProcessHeap(), 0, PfnBuffer);
 		return FALSE;
 	}
 
@@ -71,15 +81,16 @@ BOOL GetMappedDataAndReMap()
 	NumPages = PfnBufferLen / sizeof(ULONG_PTR);
 
 	// Let's try to remap the memory. First lets allocate a Virtual Address for the remapped data
-	RemappedData = VirtualAlloc(NULL, 0x1000, MEM_RESERVE | MEM_PHYSICAL, PAGE_READWRITE);
+	RemappedData = VirtualAlloc(NULL, MEM_REQUESTED, MEM_RESERVE | MEM_PHYSICAL, PAGE_READWRITE);
 	if (RemappedData == NULL)
 	{
 		printf("VirtualAlloc failed for remapped VA\n");
 		UnmapViewOfFile(PfnDataMem);
 		HeapFree(GetProcessHeap(), 0, PfnBuffer);
 	}
+
 	//Remap the data from the remote process
-	BOOL MapRet = MapUserPhysicalPages(RemappedData, NumPages, PfnBuffer);
+	MapRet = MapUserPhysicalPages(RemappedData, NumPages, PfnBuffer);
 	if (!MapRet)
 	{
 		PrintError("Remapping Failed:", GetLastError());
@@ -88,12 +99,23 @@ BOOL GetMappedDataAndReMap()
 		return FALSE;
 	}
 
+	if (!ReadProcessMemory(GetCurrentProcess(), RemappedData, buffer, 10, &ReadDataLen))
+	{
+		PrintError("RPM Failed", GetLastError());
+		UnmapViewOfFile(PfnDataMem);
+		HeapFree(GetProcessHeap(), 0, PfnBuffer);
+		return FALSE;
+	}
+
+	printf("Printing read memory...\n");
+	printf("Data: %.*s\n", 10, buffer);
+
 	if (PfnDataMem)
 		UnmapViewOfFile(PfnDataMem);
 	if (PfnBuffer)
 		HeapFree(GetProcessHeap(), 0, PfnBuffer);
 	if (RemappedData)
-		VirtualFree(RemappedData, 0x1000, MEM_RELEASE);
+		VirtualFree(RemappedData, MEM_REQUESTED, MEM_RELEASE);
 
 	printf("Done..\n");
 	return TRUE;
